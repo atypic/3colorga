@@ -20,13 +20,13 @@ import scipy.stats as st
 class Node:
     label = ""
     color = None
+    wantedColor = None
     neighbors = []
     visited = False
-    def __init__(self, lab, col, nb, vis):
+    def __init__(self, lab, col, nb):
         self.label = lab
-        self.color = col
+        self.wantedColor = col
         self.neighbors = nb
-        self.visited = vis
 
 
 class Monkey:
@@ -49,16 +49,17 @@ class Monkey:
 def fitness(graph, monkey):
     return score(graph)
 
-def score(graph):
-    """Blargh."""
+def score(node):
+    """Score the subgraph from node."""
     subSum = 0
-    if graph.visited == True:
+    if node.visited == True:
         return 0.0
 
-    graph.visited = True
-    if graph.neighbors != []:
-        for n in graph.neighbors:
-            subSum += distance(graph, n) + score(n)
+    node.visited = True
+    if node.neighbors != []:
+        for n in node.neighbors:
+#            subSum += distance(node, n) + score(n)
+            subSum += abs(node.wantedColor - node.color) + score(n)
 
     return subSum
 
@@ -79,7 +80,7 @@ def printColors(node, visitedList):
     if  node.label in visitedList:
         return;
     else:
-        print node.label," : ", node.color
+        print node.label," : ", node.color, " : ", node.wantedColor
         visitedList.append(node.label)
         for c in node.neighbors:
             printColors(c, visitedList)
@@ -152,9 +153,9 @@ def initPop(size, allowed_types):
 def select(pop):
     """Select uses tournament selection and returns ALL NEW objects. Population is a list of Monkeys"""
 
-    sortedByFitness = sorted(pop, key=lambda m: m.fitness, reverse=True)
+    sortedByFitness = sorted(pop, key=lambda m: m.fitness, reverse=False)
 
-    return sortedByFitness[0:5]
+    return sortedByFitness[0:10]
 
 #Breed a new population based on passed population
 #Also mutates
@@ -178,15 +179,29 @@ def gaLoop(cli, generations):
     #create cli object here
     nodes = []
     for i in range(0,4):
-        nodes.append(Node(i, None, [], False))
+        nodes.append(Node(i, None, []))
 
+    """
+    Wanted graph:
+     A \
+    |   C --- A 
+     B /
+
+    Well, that's the coloring anyway.
+    """
+    #TODO: Generate this.
     graph = nodes[0]
     nodes[0].neighbors = [nodes[1],nodes[2]]
+    nodes[0].wantedColor = 5.0
     nodes[1].neighbors = [nodes[0],nodes[2],nodes[3]]
+    nodes[1].wantedColor = -5.0
     nodes[2].neighbors = [nodes[0],nodes[1]]
+    nodes[2].wantedColor = 0.0
     nodes[3].neighbors = [nodes[1]]
+    nodes[3].wantedColor = 5.0
 
-    population = initPop(100, "")
+    numIndividuals = 50
+    population = initPop(numIndividuals, "")
     for generation in xrange(0,generations):
         print "Running generation ", generation
         for monkey in population:
@@ -201,4 +216,4 @@ def gaLoop(cli, generations):
         print "Most fit monkey of generation ", generation, " : ", fitMonkeys[0].fitness
         printColors(fitMonkeys[0].graph, list())
         #This should return a brand new set of monkeys
-        population = breed(100, fitMonkeys)
+        population = breed(numIndividuals, fitMonkeys)
