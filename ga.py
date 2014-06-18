@@ -9,8 +9,13 @@ from thrift.transport import TSocket
 from thrift.transport import TTransport
 from thrift.protocol import TBinaryProtocol
 
-import matplotlib.pyplot as plt
+#import matplotlib.pyplot as plt
+#mpl.use('pdf')
 import random 
+import copy
+
+import numpy as np
+import scipy.stats as st
 
 class Node:
     label = ""
@@ -25,23 +30,27 @@ class Node:
 
 
 class Monkey:
-    """Thin wrapper for an monk... individual"""
-    items = []
-    recordings = []
+    """Thin wrapper for a monkey... individual"""
+    items = list()
+    recordings = list()
     fitness = -1.0
+    graph = list()
 
     def __init__(self, sch):
         self.items = sch;
+        self.recordings = list()
+        self.fitness = -1.0
+        self.graph = list()
 
 #Take a graph and a list of buffers, get how fit the sample buffer is.
 #Each buffer represents 1 node.
 #The color is decided my the overall voltage level in the buffer.
 #The sorting is such that node 0 is buffer 0 in the list of buffers.
-def fitness(graph, buffers):
-    color(graph, buffers)
+def fitness(graph, monkey):
     return score(graph)
-    
+
 def score(graph):
+    """Blargh."""
     subSum = 0
     if graph.visited == True:
         return 0.0
@@ -59,10 +68,22 @@ def distance(a, b):
 def color(node, buffers):
     """Traverse graph depth first, color it as the buffers suggest"""
     if node.color == None:
-        node.color = sum(buffers[node.label])/len(buffers[node.label])
+        if(len(buffers[node.label].Samples) != 0):
+            node.color = sum(samplesToVolts(buffers[node.label].Samples))/len(buffers[node.label].Samples)
+        else:
+            node.color = -1.0
         for n in node.neighbors:
             color(n, buffers)
-        return
+
+def printColors(node, visitedList):
+    if  node.label in visitedList:
+        return;
+    else:
+        print node.label," : ", node.color
+        visitedList.append(node.label)
+        for c in node.neighbors:
+            printColors(c, visitedList)
+
 
 def runMonkey(cli, monkey):
     """Runs population, returns a list of recordings (full objects)"""
@@ -75,12 +96,11 @@ def runMonkey(cli, monkey):
                 recpins.append(i)
         cli.appendSequenceAction(w)
 
-    print "Running sequences"
     cli.runSequences()
     cli.joinSequences()
-    
+   
     for r in recpins:
-        monkey.recordings.append(cli.getRecording(r))
+        monkey.recordings.append(copy.deepcopy(cli.getRecording(r)))
 
     return monkey
 
@@ -90,7 +110,7 @@ def initPop(size, allowed_types):
     for ind in xrange(0,size):
         individual = []
         #limits.
-        sequenceRunTimeMs=200
+        sequenceRunTimeMs=500
         maxPins = 16
         unusedPins = set(range(0,maxPins))
         numNodes = 4
@@ -108,7 +128,7 @@ def initPop(size, allowed_types):
             it.pin = [r]
             it.startTime = 0
             it.endTime = sequenceRunTimeMs
-            it.frequency = 1000
+            it.frequency = 10000
             it.operationType = emSequenceOperationType().RECORD   #implies analogue 
             individual.append(it)
 
@@ -130,10 +150,29 @@ def initPop(size, allowed_types):
     return population
 
 def select(pop):
-    return pop
+    """Select uses tournament selection and returns ALL NEW objects. Population is a list of Monkeys"""
 
-def mutatePopulation(pop):
-    return pop
+    sortedByFitness = sorted(pop, key=lambda m: m.fitness, reverse=True)
+
+    return sortedByFitness[0:5]
+
+#Breed a new population based on passed population
+#Also mutates
+def breed(size, pop):
+    bredPopulation = []
+    for i in xrange(0,size):
+        parent = random.choice(pop)
+        child = Monkey(copy.deepcopy(parent.items))
+        #Mutate one pin
+        mutateItem = random.randint(0,11)
+        if child.items[mutateItem].operationType == emSequenceOperationType().CONSTANT:
+            child.items[mutateItem].amplitude += max(255,random.gauss(1,1))
+        bredPopulation.append(child)
+
+    return bredPopulation
+
+def samplesToVolts(buf):
+    return [i * (5.0/4096.0) for i in buf]
 
 def gaLoop(cli, generations):
     #create cli object here
@@ -147,12 +186,19 @@ def gaLoop(cli, generations):
     nodes[2].neighbors = [nodes[0],nodes[1]]
     nodes[3].neighbors = [nodes[1]]
 
-    population = initPop(20, "")
+    population = initPop(100, "")
     for generation in xrange(0,generations):
+        print "Running generation ", generation
         for monkey in population:
-            print "Running monkey"
-            monkey.fitness = fitness(graph, runMonkey(cli, monkey))
-        fitMonkeys = select(population)
-        print "Most fit monkey of generation ", generation, " :", fitMonkeys[0]
+            monkeyRun = runMonkey(cli, monkey)
+            coloredGraph = copy.deepcopy(graph)
+            color(coloredGraph, monkeyRun.recordings)
 
-        population = mutatePopulation(fitMonkeys)
+            monkey.graph = coloredGraph
+            monkey.fitness = fitness(coloredGraph, monkey)
+
+        fitMonkeys = select(population)
+        print "Most fit monkey of generation ", generation, " : ", fitMonkeys[0].fitness
+        printColors(fitMonkeys[0].graph, list())
+        #This should return a brand new set of monkeys
+        population = breed(100, fitMonkeys)
