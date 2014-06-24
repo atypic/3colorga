@@ -32,21 +32,23 @@ class Node:
 
 class Item:
     item = None
-    inputPin = -1
-    def __init__(self, it, ip):
-      self.item = it;
-      self.inputPin = ip;
+    inputPin = -1    #Which of the inputs is this item
+    graphNodeLabel = -1   #Which of the nodes is this item assigned to
+    def __init__(self, it, ip, rp):
+      self.item = it
+      self.inputPin = ip
+      self.graphNodeLabel = rp
 
 class Monkey:
     """Thin wrapper for a monkey... individual"""
     items = list()
-    recordings = list()
+    recordings = {}
     fitness = -1.0
     graphs = list()
 
     def __init__(self, sch):
         self.items = sch;
-        self.recordings = list()
+        self.recordings = {}
         self.fitness = -1.0
         self.graphs = list()
 
@@ -78,6 +80,7 @@ def distance(a, b):
 
 def color(node, buffers):
     """Traverse graph depth first, color it as the buffers suggest"""
+    """Buffer is indexed on node labels."""
     if node.color == None:
         if(len(buffers[node.label].Samples) != 0):
             node.color = sum(samplesToVolts(buffers[node.label].Samples))/len(buffers[node.label].Samples)
@@ -106,7 +109,7 @@ def runMonkey(cli, monkey, inputValue):
 
     cli.reset()
     cli.clearSequences()
-    recpins = []
+    recpins = {}
     for w in monkey.items:
         """This is a input pin, digital one."""
         if w.inputPin != -1:
@@ -114,8 +117,7 @@ def runMonkey(cli, monkey, inputValue):
             w.item.cycleTime = 100
 
         elif w.item.operationType == emSequenceOperationType().RECORD:
-            for i in w.item.pin:
-                recpins.append(i)
+            recpins[w.graphNodeLabel] = w.item.pin[0]
 
         #print w.item
         cli.appendSequenceAction(w.item)
@@ -123,40 +125,37 @@ def runMonkey(cli, monkey, inputValue):
     cli.runSequences()
     cli.joinSequences()
    
-    for r in recpins:
-        monkey.recordings.append(copy.deepcopy(cli.getRecording(r)))
+    for r in recpins.keys():
+        monkey.recordings[r] = cli.getRecording(recpins[r])
 
     return monkey
 
-def initPop(size, allowed_types):
+def initPop(size, allowedOpTypes):
     """Initializes a list of Monkey objects, len == size; each Monkey based on allowed_types."""
     population = []
     for ind in xrange(0,size):
         #print " -New individual - "
         individual = []
         #limits.
-        sequenceRunTimeMs=100
+        sequenceRunTimeMs=75
         maxPins = 16
         unusedPins = set(range(0,maxPins))
         numNodes = 4
         numInputPins = 2
 
         usedDACchannels = 0
-        recordPins = []
         #First the recording pins for this individual
         for j in xrange(0,numNodes):
             foo = random.choice(list(unusedPins))
-            recordPins.append(foo)
             unusedPins.remove(foo)
 
-        for r in recordPins:
             it = emSequenceItem()
-            it.pin = [r]
+            it.pin = [foo]
             it.startTime = 0
             it.endTime = sequenceRunTimeMs
             it.frequency = 10000
             it.operationType = emSequenceOperationType().RECORD   #implies analogue 
-            individual.append(Item(it, -1))
+            individual.append(Item(it, -1, j))
 
         for i in xrange(0, numInputPins):
             it = emSequenceItem()
@@ -166,7 +165,7 @@ def initPop(size, allowed_types):
             it.startTime = 0
             it.endTime = sequenceRunTimeMs
             it.operationType = emSequenceOperationType().DIGITAL
-            individual.append(Item(it, i))
+            individual.append(Item(it, i, -1))
 
         #Use remaining pins for DA channels.
         for d in range(0, 8):
@@ -174,14 +173,20 @@ def initPop(size, allowed_types):
 
             pin = random.sample(unusedPins, 1)
             unusedPins.remove(pin[0])
-            
             it.pin = pin
             it.startTime = 0
             it.endTime = sequenceRunTimeMs
-            #it.amplitude = random.randrange(0,255)
-            it.amplitude = 255
-            it.operationType = emSequenceOperationType().CONSTANT   #implies analogue 
-            individual.append(Item(it, -1))
+            
+            opType = random.choice(allowedOpTypes)
+            it.operationType = opType
+
+            if opType == emSequenceOperationType().CONSTANT:
+                it.amplitude = random.randrange(0,255)
+            elif opType == emSequenceOperationType().DIGITAL:
+                it.frequency = random.randint(0,30000000)
+                it.cycleTime = random.randint(0,100)
+            
+            individual.append(Item(it, -1, -1))
 
         newMonkey = Monkey(individual)
 
@@ -230,13 +235,24 @@ def breed(size, pop):
       j += 1
 
       #First mutation
+      dice = random.random()
       if it.operationType == emSequenceOperationType().CONSTANT:
-        if random.random() > 0.96:
-          it.amplitude += int(min(255,random.gauss(2,2)))
+          if dice > 0.95:
+              it.amplitude += int(min(255,random.gauss(2,2)))
+      elif it.operationType == emSequenceOperationType.DIGITAL:
+          if dice > 0.95:
+              it.frequency += int(random.gauss(2,2))
+              it.cycleTime += int(random.gauss(2,2))
 
+      dice = random.random()
       if it2.operationType == emSequenceOperationType().CONSTANT:
-        if random.random() > 0.96:
-          it2.amplitude += int(min(255,random.gauss(2,2)))
+          if dice > 0.95:
+              it2.amplitude += int(min(255,random.gauss(2,2)))
+      elif it2.operationType == emSequenceOperationType.DIGITAL:
+          if dice > 0.95:
+              it2.frequency += int(random.gauss(2,2))
+              it2.cycleTime += int(random.gauss(2,2))
+
 
 
     #Second mutation operator ... kinda like cross over tbh.
@@ -399,7 +415,7 @@ def gaLoop(cli, generations):
     graphs = allPossibleColorings(nodes)
 
     numIndividuals = 50
-    population = initPop(numIndividuals, "")
+    population = initPop(numIndividuals, [emSequenceOperationType().CONSTANT, emSequenceOperationType().DIGITAL])
     for generation in xrange(0,generations):
         print "Running generation ", generation
         for monkey in population:
@@ -410,19 +426,22 @@ def gaLoop(cli, generations):
                 #Color the graph in accordance with the buffers found,
                 #and set the "wanted" color in the colored graph
                 #like the current test case.
-                coloredGraph = copy.deepcopy(graphs[graphNumber][0])
-                color(coloredGraph, monkeyRun.recordings)
-                monkey.graphs.append(coloredGraph)
+                coloredGraph = copy.deepcopy(graphs[graphNumber])
+                #print "ID of recordings to be used for coloring: ", id(monkeyRun.recordings)
+                color(coloredGraph[0], monkeyRun.recordings)
+                monkey.graphs.append(copy.deepcopy(coloredGraph[0]))
                 graphNumber += 1
 
             monkey.fitness = fitness(monkey)
 
         fitMonkeys = select(population)
         print "Most fit monkey of generation ", generation, " : ", fitMonkeys[0].fitness
+        for itam in fitMonkeys[0].items:
+          print itam.item
+
         for g in fitMonkeys[0].graphs:
           print "-----------------"
           printColors(g, list())
-
         if(fitMonkeys[0].fitness < 12.0):
           print "-----------------------------------------"
           print "Succeeded. Fitness ", fitMonkeys[0].fitness
