@@ -3,14 +3,17 @@ import sys
 
 import emEvolvableMotherboard
 from ttypes import *
+from collections import defaultdict
 
 from thrift import Thrift
 from thrift.transport import TSocket
 from thrift.transport import TTransport
 from thrift.protocol import TBinaryProtocol
 
-#import matplotlib.pyplot as plt
-#mpl.use('pdf')
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+
 import random 
 import copy
 import itertools
@@ -60,20 +63,60 @@ def fitness(monkey):
     s = 0
     for g in monkey.graphs:
         s += score(g)
+    if isWorkingDevice(monkey, 0.15):
+      s *= 0.9
     return s
 
+def isWorkingDevice(monkey, voltRange):
+  r = True
+  for g in monkey.graphs:
+    nodeCorrectness = []
+    nodeVisited = []
+    _isWorkingDevice(g, nodeVisited, nodeCorrectness, voltRange)
+
+    if False in nodeCorrectness:
+      r = False
+
+  return r
+
+def _isWorkingDevice(node, visitedList, correctList, voltRange):
+  if  node.label in visitedList:
+    return;
+  else:
+    visitedList.append(node.label)
+    if (node.color >= (node.wantedColor)) and ((node.color) < (node.wantedColor + voltRange)):
+      correctList.append(True)
+    else:
+      correctList.append(False)
+      
+    for c in node.neighbors:
+      _isWorkingDevice(c, visitedList, correctList, voltRange)
+
+
 def score(node):
-    """Score the subgraph from node."""
-    subSum = 0.0
-    if node.visited == True:
-        return 0.0
+  """Score the subgraph from node."""
+  subSum = 0.0
+  if node.visited == True:
+    return 0.0
 
-    node.visited = True
-    if node.neighbors != []:
-        for n in node.neighbors:
-            subSum += score(n)
+  node.visited = True
+  multiplier = 1.0
+  if node.neighbors != []:
+    for n in node.neighbors:
+      #if (node.wantedColor > n.wantedColor) & (node.color > n.color):
+      #  multiplier = 0.7
+      #elif (node.wantedColor < n.wantedColor) & (node.color < n.color):
+      #  multiplier = 0.7
 
-    return abs(node.wantedColor - node.color) + subSum
+      subSum += multiplier * score(n)
+
+  s = abs(node.wantedColor - node.color) + subSum
+
+  return s
+
+def specialScore(inputPin, wanted1, real1, wanted2, real2):
+
+  return score
 
 def distance(a, b):
     return abs(a.color - b.color)
@@ -83,12 +126,14 @@ def color(node, buffers):
     """Buffer is indexed on node labels."""
     if node.color == None:
         if(len(buffers[node.label].Samples) != 0):
-            node.color = sum(samplesToVolts(buffers[node.label].Samples))/len(buffers[node.label].Samples)
+            #node.color = sum(samplesToVolts(buffers[node.label].Samples))/len(buffers[node.label].Samples)
+            node.color = max(samplesToVolts(buffers[node.label].Samples))
             #print "Colored node ", node.label, " ", node.color, "buffsize", len(buffers[node.label].Samples)
         else:
             node.color = None
         for n in node.neighbors:
             color(n, buffers)
+
 
 def printColors(node, visitedList):
     if  node.label in visitedList:
@@ -102,6 +147,13 @@ def printColors(node, visitedList):
 
 def printMonkey(monkey):
   print "------------------"
+  for item in monkey.items:
+    print "  Item ", item.item.operationType, " on pin ", item.item.pin, " input pin", item.inputPin,\
+        "graph node label", item.graphNodeLabel 
+    if item.item.operationType == emSequenceOperationType().CONSTANT:
+      print "    Voltage: ", item.item.amplitude
+    elif item.item.operationType == emSequenceOperationType().DIGITAL:
+      print "    Freq:", item.item.frequency, " Cycle:", item.item.cycleTime
   print "------------------"
 
 def runMonkey(cli, monkey, inputValue):
@@ -137,11 +189,13 @@ def initPop(size, allowedOpTypes):
         #print " -New individual - "
         individual = []
         #limits.
-        sequenceRunTimeMs=75
+        sequenceRunTimeMs = 80
         maxPins = 16
+        numDA = 0
+        maxDA = 8
         unusedPins = set(range(0,maxPins))
         numNodes = 4
-        numInputPins = 2
+        numInputPins = 1
 
         usedDACchannels = 0
         #First the recording pins for this individual
@@ -151,7 +205,7 @@ def initPop(size, allowedOpTypes):
 
             it = emSequenceItem()
             it.pin = [foo]
-            it.startTime = 0
+            it.startTime = 10
             it.endTime = sequenceRunTimeMs
             it.frequency = 10000
             it.operationType = emSequenceOperationType().RECORD   #implies analogue 
@@ -162,28 +216,31 @@ def initPop(size, allowedOpTypes):
             foo = random.choice(list(unusedPins))
             unusedPins.remove(foo)
             it.pin = [foo]
-            it.startTime = 0
-            it.endTime = sequenceRunTimeMs
+            it.startTime = 10
+            it.endTime = sequenceRunTimeMs + 5
             it.operationType = emSequenceOperationType().DIGITAL
             individual.append(Item(it, i, -1))
 
         #Use remaining pins for DA channels.
+#        for d in range(0, maxPins - numNodes - numInputPins):
         for d in range(0, 8):
             it = emSequenceItem()
 
             pin = random.sample(unusedPins, 1)
             unusedPins.remove(pin[0])
             it.pin = pin
-            it.startTime = 0
+            print "PIN:", pin
+            it.startTime = 5
             it.endTime = sequenceRunTimeMs
             
             opType = random.choice(allowedOpTypes)
             it.operationType = opType
 
             if opType == emSequenceOperationType().CONSTANT:
-                it.amplitude = random.randrange(0,255)
+                it.amplitude = random.randrange(128,200)
+                #it.amplitude = random.choice([2,255])
             elif opType == emSequenceOperationType().DIGITAL:
-                it.frequency = random.randint(0,30000000)
+                it.frequency = random.randint(0,1000000)
                 it.cycleTime = random.randint(0,100)
             
             individual.append(Item(it, -1, -1))
@@ -194,81 +251,92 @@ def initPop(size, allowedOpTypes):
 
     return population
 
-def select(pop):
-    """Select uses tournament selection and returns ALL NEW objects. Population is a list of Monkeys"""
+def selectAndBreed(pop, popSize):
+    """Select uses tournament selections. Population is a list of Monkeys"""
     """len(pop)/2 tournaments are held."""
+    newChildren = []
+    while(len(newChildren) < popSize):
+      numParents = 2
+      winners = []
+      for i in xrange(0,numParents):
+        fighters = random.sample(pop, 2)
+        sortedByFitness = sorted(fighters, key=lambda m: m.fitness, reverse=False)
+        
+        if random.random() < 0.9:
+          winners.append(sortedByFitness[0])
+        else:
+          winners.append(sortedByFitness[1])
+        
+      newChildren.extend(breed(winners))
+      #winners = sorted(winners, key=lambda m: m.fitness, reverse=False)
 
-    winners = []
-    for t in xrange(0,int(len(pop)/2)):
-      fighters = random.sample(pop, 2)
-      sortedByFitness = sorted(fighters, key=lambda m: m.fitness, reverse=False)
-      if random.random() < 0.9:
-        winners.append(sortedByFitness[0])
-      else:
-        winners.append(sortedByFitness[1])
-    
-    return winners
+    return newChildren
 
 #Breed a new population based on passed population
-#Also mutates
-def breed(size, pop):
+#Always returns two new kids
+def breed(parents):
   bredPopulation = []
-  while len(bredPopulation) < size:
-
-    mom = random.choice(pop)
-    mom2 = random.choice(pop)
-
-    child = Monkey(copy.deepcopy(mom.items))
-    child2 = Monkey(copy.deepcopy(mom2.items))
+  while(len(bredPopulation) < 2):
+    child = Monkey(copy.deepcopy(parents[0].items))
+    child2 = Monkey(copy.deepcopy(parents[1].items))
 
     j = 0
     xpoint = random.randrange(0,16)
+    pinToItem1 = {}
+    pinToItem2 = {}
     for i,i2 in zip(child.items, child2.items):
       it = i.item
       it2 = i2.item
-
+      #Note that this allows the same pin to appear more than one time
       if j > xpoint:
+        tmp = it.pin
         it.pin = it2.pin
+        it2.pin = tmp
+        #print it2.pin, " moved to ", it.pin
+        #print it.pin, " moved to ", it2.pin
       else:
+        tmp = it2.pin
         it2.pin = it.pin
+        it.pin = tmp
+        #print it.pin, " moved to ", it2.pin
+        #print it2.pin, " moved to ", it.pin
 
       j += 1
 
-      #First mutation
-      dice = random.random()
-      if it.operationType == emSequenceOperationType().CONSTANT:
-          if dice > 0.95:
-              it.amplitude += int(min(255,random.gauss(2,2)))
-      elif it.operationType == emSequenceOperationType.DIGITAL:
-          if dice > 0.95:
-              it.frequency += int(random.gauss(2,2))
-              it.cycleTime += int(random.gauss(2,2))
+      pinToItem1[it.pin[0]] = it
+      pinToItem2[it2.pin[0]] = it2
 
-      dice = random.random()
-      if it2.operationType == emSequenceOperationType().CONSTANT:
-          if dice > 0.95:
-              it2.amplitude += int(min(255,random.gauss(2,2)))
-      elif it2.operationType == emSequenceOperationType.DIGITAL:
-          if dice > 0.95:
-              it2.frequency += int(random.gauss(2,2))
-              it2.cycleTime += int(random.gauss(2,2))
+   
+    for c,pinToItem in zip([child.items, child2.items],[pinToItem1, pinToItem2]):
+      for q in c:
+        i = q.item
+        #First mutation
+        dice = random.random()
+        dice2 = random.random()
+        mutationRate = 0.90
 
+        #Two mutation possibilities
+        if dice2 > 0.5:
+          if i.operationType == emSequenceOperationType().CONSTANT:
+            if dice > mutationRate:
+              i.amplitude = int(max(128,min(230, i.amplitude + random.gauss(0,15))))
+              #print "new amp", i.amplitude
+          elif i.operationType == emSequenceOperationType.DIGITAL:
+            if dice > mutationRate:
+              i.frequency = max(1, i.frequency + int(random.gauss(0,1000)))
+              i.cycleTime = int(max(100,min(0, i.cycleTime + random.gauss(0,10))))
+        else:
+          #Second mutation operator: internal pin increment (or swap, if to-pin in use)
+          if dice > mutationRate:
+            toPin = (i.pin[0] + 1)%16
+            fromPin = i.pin[0]
 
-
-    #Second mutation operator ... kinda like cross over tbh.
-    #if random.random() > 0.99:
-    #  swapItems = random.sample(range(0,12), 2)
-    #  tmp = child.items[swapItems[0]].pin
-    #  child.items[swapItems[0]].pin = child.items[swapItems[1]].pin
-    #  child.items[swapItems[1]].pin = tmp
-
-    #if random.random() > 0.99:
-    #  swapItems = random.sample(range(0,12), 2)
-    #  tmp = child2.items[swapItems[0]].pin
-    #  child2.items[swapItems[0]].pin = child2.items[swapItems[1]].pin
-    #  child2.items[swapItems[1]].pin = tmp
-
-
+            if pinToItem.has_key(toPin):
+              tmp = copy.copy(pinToItem[fromPin].pin)
+              pinToItem[fromPin].pin = pinToItem[toPin].pin
+              pinToItem[toPin].pin = tmp
+            else:
+              i.pin = [toPin]
 
 
     if isValidMonkey(child):
@@ -276,29 +344,34 @@ def breed(size, pop):
     if isValidMonkey(child2):
       bredPopulation.append(child2)
 
+  #for m in bredPopulation:
+  #  print "------"
+  #  for j in m.items:
+  #    print j.item
+  #  print "------"
   return bredPopulation
 
 def isValidMonkey(monkey):
   uniqueRecPins = []
   for it in monkey.items:
-    if it.item.operationType == emSequenceOperationType().RECORD:
-      if it.item.pin in uniqueRecPins:
-        return False
-      else:
-        uniqueRecPins.append(it.item.pin)
+    #if it.item.operationType == emSequenceOperationType().RECORD:
+    if it.item.pin in uniqueRecPins:
+      return False
+    else:
+      uniqueRecPins.append(it.item.pin)
 
-  if len(uniqueRecPins) != 4:
-    return False
+  #if len(uniqueRecPins) != 4:
+  #return False
 
   return True
 
 def samplesToVolts(buf):
-    return [i * (5.0/4096.0) for i in buf]
+  return [i * (5.0/4096.0) for i in buf]
 
 def allPossibleColorings(graph):
-  R = 5.0
-  G = -5.0
-  B = 0.0
+  R = 0.0
+  G = 0.15
+  B = 0.30
 
   ret = []
   g = copy.deepcopy(graph)
@@ -309,17 +382,17 @@ def allPossibleColorings(graph):
   ret.append(g)
 
   g = copy.deepcopy(graph)
-  g[0].wantedColor = B
-  g[1].wantedColor = R
-  g[2].wantedColor = G
-  g[3].wantedColor = G
-  ret.append(g)
-
-  g = copy.deepcopy(graph)
   g[0].wantedColor = G
   g[1].wantedColor = B
   g[2].wantedColor = R
   g[3].wantedColor = R
+  ret.append(g)
+
+  g = copy.deepcopy(graph)
+  g[0].wantedColor = B
+  g[1].wantedColor = R
+  g[2].wantedColor = G
+  g[3].wantedColor = G
   ret.append(g)
 
   g = copy.deepcopy(graph)
@@ -414,39 +487,96 @@ def gaLoop(cli, generations):
 
     graphs = allPossibleColorings(nodes)
 
-    numIndividuals = 50
-    population = initPop(numIndividuals, [emSequenceOperationType().CONSTANT, emSequenceOperationType().DIGITAL])
-    for generation in xrange(0,generations):
-        print "Running generation ", generation
-        for monkey in population:
-            graphNumber = 0
-            for a,b in itertools.product([0,1],[0,1]):
-                #print "  Running individual ", id(monkey), " for input case ", [a,b]
-                monkeyRun = runMonkey(cli, monkey, [a,b])
-                #Color the graph in accordance with the buffers found,
-                #and set the "wanted" color in the colored graph
-                #like the current test case.
-                coloredGraph = copy.deepcopy(graphs[graphNumber])
-                #print "ID of recordings to be used for coloring: ", id(monkeyRun.recordings)
-                color(coloredGraph[0], monkeyRun.recordings)
-                monkey.graphs.append(copy.deepcopy(coloredGraph[0]))
-                graphNumber += 1
+    numIndividuals = 100
 
-            monkey.fitness = fitness(monkey)
+    populations = [initPop(numIndividuals, [emSequenceOperationType().CONSTANT, emSequenceOperationType().DIGITAL]),\
+                  initPop(numIndividuals, [emSequenceOperationType().CONSTANT]),\
+                  initPop(numIndividuals, [emSequenceOperationType().DIGITAL])]
+    popNames = ["Mixed", "Constant only", "Digital"]
 
-        fitMonkeys = select(population)
-        print "Most fit monkey of generation ", generation, " : ", fitMonkeys[0].fitness
-        for itam in fitMonkeys[0].items:
-          print itam.item
+    avgFitness = defaultdict(list)
+    maxFitness = defaultdict(list)
+    numWorking = defaultdict(list)
 
-        for g in fitMonkeys[0].graphs:
-          print "-----------------"
-          printColors(g, list())
-        if(fitMonkeys[0].fitness < 12.0):
-          print "-----------------------------------------"
-          print "Succeeded. Fitness ", fitMonkeys[0].fitness
-          print fitMonkeys[0].items
-          print "-----------------------------------------"
-          break
-        #This should return a brand new set of monkeys
-        population = breed(numIndividuals, fitMonkeys)
+    for popName, population in zip(popNames,populations):
+      cli.reset()
+
+      for generation in xrange(0,generations):
+          print "Running generation ", generation
+          numWorkingInGeneration = 0
+          for monkey in population:
+              graphNumber = 0
+  #           for a,b in itertools.product([0,1],[0,1]):
+              for case in [[0],[1]]:
+              #for case in [[0,0]]:
+                  #print "  Running individual ", id(monkey), " for input case ", [a,b]
+                  monkeyRun = runMonkey(cli, monkey, case)
+                  #Color the graph in accordance with the buffers found,
+                  #and set the "wanted" color in the colored graph
+                  #like the current test case.
+                  coloredGraph = copy.deepcopy(graphs[graphNumber])
+                  #print "ID of recordings to be used for coloring: ", id(monkeyRun.recordings)
+                  color(coloredGraph[0], monkeyRun.recordings)
+                  monkey.graphs.append(copy.deepcopy(coloredGraph[0]))
+                  graphNumber += 1
+
+              monkey.fitness = fitness(monkey)
+
+              if isWorkingDevice(monkey, 0.15):
+                numWorkingInGeneration += 1
+
+
+          #Statistics per generation
+          fitMonkeys = sorted(population, key=lambda m: m.fitness, reverse=False)
+          print "Most fit monkey of generation ", generation, " : ", fitMonkeys[0].fitness
+          printMonkey(fitMonkeys[0])
+          avg = sum([a.fitness for a in fitMonkeys])/len(fitMonkeys)
+          print "Arithmetic average fitness", avg, " for ", popName
+          print "Working devices in generation", numWorkingInGeneration
+
+          maxFitness[popName].append(fitMonkeys[0].fitness)
+          avgFitness[popName].append(avg)
+          numWorking[popName].append(numWorkingInGeneration)
+
+          for g in fitMonkeys[0].graphs:
+            print "-----------------" 
+            printColors(g, list())
+         # if(fitMonkeys[0].fitness < .0):
+         #   print "-----------------------------------------"
+         #   print "Succeeded. Fitness ", fitMonkeys[0].fitness
+         #   print fitMonkeys[0].items
+          #  print "-----------------------------------------"
+          #  break
+          #This should return a brand new set of monkeys
+          
+          population = selectAndBreed(population, numIndividuals)
+          print "Bred new population of ", len(population), " monkeys."
+
+      #Make plot for this input type
+
+    plt.figure()
+    plt.title("Max fitness")
+    plt.ylim(0,4)
+    for g in popNames:
+      plt.plot(maxFitness[g], label=g)
+    plt.legend()
+    plt.savefig("plot.pdf")
+    plt.close()
+
+
+    plt.figure()
+    plt.title("Arithmetic average fitness")
+    plt.ylim(0,4)
+    for g in popNames:
+      plt.plot(avgFitness[g], label=g)
+    plt.legend()
+    plt.savefig("avg.pdf")
+    plt.close()
+
+    plt.figure()
+    plt.title("Working devices per")
+    for g in popNames:
+      plt.plot(numWorking[g], label=g)
+    plt.legend()
+    plt.savefig("working.pdf")
+    plt.close()
