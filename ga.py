@@ -64,7 +64,7 @@ def fitness(monkey):
     for g in monkey.graphs:
         s += score(g)
     if isWorkingDevice(monkey, 0.15):
-      s *= 0.9
+      s *= 0.8
     return s
 
 def isWorkingDevice(monkey, voltRange):
@@ -84,13 +84,15 @@ def _isWorkingDevice(node, visitedList, correctList, voltRange):
     return;
   else:
     visitedList.append(node.label)
-    if (node.color >= (node.wantedColor)) and ((node.color) < (node.wantedColor + voltRange)):
-      correctList.append(True)
-    else:
-      correctList.append(False)
-      
-    for c in node.neighbors:
-      _isWorkingDevice(c, visitedList, correctList, voltRange)
+    for nig in node.neighbors:
+      if (nig.wantedColor >= node.wantedColor) and (nig.color >= node.color):
+        correctList.append(True)
+      elif (nig.wantedColor < node.wantedColor) and (nig.color < node.color):
+        correctList.append(True)
+      else:
+        correctList.append(False)
+
+      _isWorkingDevice(nig, visitedList, correctList, voltRange)
 
 
 def score(node):
