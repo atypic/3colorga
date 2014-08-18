@@ -1,6 +1,7 @@
 from __future__ import division
 import sys
 
+import pickle
 import emEvolvableMotherboard
 from ttypes import *
 from collections import defaultdict
@@ -17,9 +18,12 @@ import matplotlib.pyplot as plt
 import random 
 import copy
 import itertools
+import time
 
 import numpy as np
+import scipy
 import scipy.stats as st
+import scipy.spatial.distance as dist
 
 class Node:
     label = ""
@@ -59,44 +63,108 @@ class Monkey:
 #Each buffer represents 1 node.
 #The color is decided my the overall voltage level in the buffer.
 #The sorting is such that node 0 is buffer 0 in the list of buffers.
-def fitness(monkey):
-    s = 0
-    for g in monkey.graphs:
-        s += score(g)
-    if isWorkingDevice(monkey, 0.15):
-      s *= 0.8
-    return s
+def fitness2(monkey, numWork):
+  s = 0
+  voltColor = defaultdict(list)
+  for g in monkey.graphs:
+    getVoltColor(g, voltColor)
+    #s += score(g)
+  #print voltColor
+  minSum = 0.0
+  numMin = 0
+  colors = []
+  colorReps = defaultdict(list)
+  #print voltColor
+  for voltkey in voltColor.keys():
+    for pair in itertools.combinations(voltColor[voltkey], r=2):
+      #print "voltkey pair", pair[0], " bluh ", pair[1]
+      minSum += abs(pair[0] - pair[1])/len(voltColor[voltkey])
 
-def isWorkingDevice(monkey, voltRange):
+    srt = sorted(voltColor[voltkey])
+    rep = srt[0] + ((srt[-1] - srt[0])/2.0)
+    colors.append(rep)
+    colorReps[voltkey] = rep
+
+  maxSum = 0.0
+  numMax = 0
+  #print colors
+  for pair in itertools.combinations(colors, r=2):
+    #print "Comparing", pair[0], " to ", pair[1]
+    maxSum += abs(pair[0] - pair[1])
+    numMax += 1
+
+
+  if isWorkingDevice(monkey, colorReps, 0.1):
+    numWork += 1
+    print "Working device! :)"
+
+  print "Color separation score: ", maxSum, "Per-color similarity score: ", minSum
+  return maxSum - minSum
+  #return maxSum
+
+def fitness(monkey):
+  s = 0
+  voltColor = defaultdict(list)
+  for g in monkey.graphs:
+    getVoltColor(g, voltColor)
+  #print voltColor
+  maxim = 0.0
+  numMin = 0
+  fit = 0.0
+  colors = []
+  colorReps = defaultdict(list)
+
+  #Separation
+  fit += min(voltColor[3.0]) - max(voltColor[2.0])
+  fit += min(voltColor[2.0]) - max(voltColor[1.0])
+
+  #Green band tiny as possible in the middle
+  fit -= max(voltColor[2.0]) - min(voltColor[2.0])
+
+  numWork = 0
+  if (min(voltColor[3.0]) > max(voltColor[2.0])) and (min(voltColor[2.0]) > max(voltColor[1.0])):
+    print "Certified working device :-):"
+    print voltColor
+    numWork += 1
+    fit *= 1.15
+  else:
+    fit *= 0.85
+
+  return (fit, numWork)
+
+
+
+
+def isWorkingDevice(monkey, colors, voltRange):
   r = True
   for g in monkey.graphs:
     nodeCorrectness = []
     nodeVisited = []
-    _isWorkingDevice(g, nodeVisited, nodeCorrectness, voltRange)
-
+    _isWorkingDevice(g, colors, nodeVisited, nodeCorrectness, voltRange)
     if False in nodeCorrectness:
       r = False
 
   return r
 
-def _isWorkingDevice(node, visitedList, correctList, voltRange):
+def _isWorkingDevice(node, colors, visitedList, correctList, voltRange):
   if  node.label in visitedList:
     return;
   else:
     visitedList.append(node.label)
-    for nig in node.neighbors:
-      if (nig.wantedColor >= node.wantedColor) and (nig.color >= node.color):
-        correctList.append(True)
-      elif (nig.wantedColor < node.wantedColor) and (nig.color < node.color):
-        correctList.append(True)
-      else:
-        correctList.append(False)
+    if ((node.color + voltRange) < colors[node.wantedColor]) and ((node.color - voltRange) > colors[node.wantedColor]):
+      print "dec:", node.color, "want:", colors[node.wantedColor]
+      correctList.append(True)
+    else:
+      correctList.append(False)
 
-      _isWorkingDevice(nig, visitedList, correctList, voltRange)
+    for nig in node.neighbors:
+      _isWorkingDevice(nig, colors, visitedList, correctList, voltRange)
+
 
 
 def score(node):
-  """Score the subgraph from node."""
+  """Score the subgraph from node.
+  """
   subSum = 0.0
   if node.visited == True:
     return 0.0
@@ -116,13 +184,34 @@ def score(node):
 
   return s
 
-def specialScore(inputPin, wanted1, real1, wanted2, real2):
 
-  return score
+def getVoltColor(node, voltColors):
+  if node.visited == True:
+    return voltColors
+
+  node.visited = True
+  voltColors[node.wantedColor].append(node.color)
+  if node.neighbors != []:
+    for n in node.neighbors:
+      getVoltColor(n, voltColors)
+
+  return voltColors
+
 
 def distance(a, b):
     return abs(a.color - b.color)
 
+""" Color also collects all colors in the passed coloring hash.
+
+maxVolts[color] = (0.4, 0.3, 0.1)
+
+We then proceed to analyze this array to find the fitness.
+We want the difference in the list to be minimized, because it's the same color,
+but the distance between each of the colors maximal.
+
+So we sort the list, take max-min/2 to find the middle value, then 
+we we check the difference between all pairs.
+"""
 def color(node, buffers):
     """Traverse graph depth first, color it as the buffers suggest"""
     """Buffer is indexed on node labels."""
@@ -184,6 +273,32 @@ def runMonkey(cli, monkey, inputValue):
 
     return monkey
 
+
+def diff(m1, m2):
+
+  v1 = 16 * [0]
+  v2 = 16 * [0]
+
+  for its in m1.items:
+    i = its.item
+    if i.operationType == emSequenceOperationType().CONSTANT:
+      v1[i.pin[0]] = i.amplitude
+    elif i.operationType == emSequenceOperationType().DIGITAL:
+      v1[i.pin[0]] = i.frequency*(i.cycleTime/100.0)
+    elif i.operationType == emSequenceOperationType().RECORD:
+      v1[i.pin[0]] = 1.0
+
+  for its in m2.items:
+    i = its.item
+    if i.operationType == emSequenceOperationType().CONSTANT:
+      v2[i.pin[0]] = i.amplitude
+    elif i.operationType == emSequenceOperationType().DIGITAL:
+      v2[i.pin[0]] = (i.frequency/10000.0)*(i.cycleTime/100.0)
+    elif i.operationType == emSequenceOperationType().RECORD:
+      v2[i.pin[0]] = 1.0
+
+  return dist.cosine(v1,v2)
+
 def initPop(size, allowedOpTypes):
     """Initializes a list of Monkey objects, len == size; each Monkey based on allowed_types."""
     population = []
@@ -191,13 +306,13 @@ def initPop(size, allowedOpTypes):
         #print " -New individual - "
         individual = []
         #limits.
-        sequenceRunTimeMs = 80
+        sequenceRunTimeMs = 50
         maxPins = 16
         numDA = 0
         maxDA = 8
         unusedPins = set(range(0,maxPins))
         numNodes = 4
-        numInputPins = 1
+        numInputPins = 4
 
         usedDACchannels = 0
         #First the recording pins for this individual
@@ -207,7 +322,7 @@ def initPop(size, allowedOpTypes):
 
             it = emSequenceItem()
             it.pin = [foo]
-            it.startTime = 10
+            it.startTime = 0
             it.endTime = sequenceRunTimeMs
             it.frequency = 10000
             it.operationType = emSequenceOperationType().RECORD   #implies analogue 
@@ -232,7 +347,7 @@ def initPop(size, allowedOpTypes):
             unusedPins.remove(pin[0])
             it.pin = pin
             print "PIN:", pin
-            it.startTime = 5
+            it.startTime = 0
             it.endTime = sequenceRunTimeMs
             
             opType = random.choice(allowedOpTypes)
@@ -262,7 +377,7 @@ def selectAndBreed(pop, popSize):
       winners = []
       for i in xrange(0,numParents):
         fighters = random.sample(pop, 2)
-        sortedByFitness = sorted(fighters, key=lambda m: m.fitness, reverse=False)
+        sortedByFitness = sorted(fighters, key=lambda m: m.fitness, reverse=True)
         
         if random.random() < 0.9:
           winners.append(sortedByFitness[0])
@@ -325,8 +440,8 @@ def breed(parents):
               #print "new amp", i.amplitude
           elif i.operationType == emSequenceOperationType.DIGITAL:
             if dice > mutationRate:
-              i.frequency = max(1, i.frequency + int(random.gauss(0,1000)))
-              i.cycleTime = int(max(100,min(0, i.cycleTime + random.gauss(0,10))))
+              i.frequency = max(1, min(75000000, i.frequency + int(random.gauss(0,100000))))
+              i.cycleTime = int(min(100,max(0, i.cycleTime + random.gauss(0,20))))
         else:
           #Second mutation operator: internal pin increment (or swap, if to-pin in use)
           if dice > mutationRate:
@@ -371,9 +486,9 @@ def samplesToVolts(buf):
   return [i * (5.0/4096.0) for i in buf]
 
 def allPossibleColorings(graph):
-  R = 0.0
-  G = 0.15
-  B = 0.30
+  R = 1.0
+  G = 2.0
+  B = 3.0
 
   ret = []
   g = copy.deepcopy(graph)
@@ -489,27 +604,40 @@ def gaLoop(cli, generations):
 
     graphs = allPossibleColorings(nodes)
 
-    numIndividuals = 100
+    numIndividuals = 65
 
     populations = [initPop(numIndividuals, [emSequenceOperationType().CONSTANT, emSequenceOperationType().DIGITAL]),\
                   initPop(numIndividuals, [emSequenceOperationType().CONSTANT]),\
                   initPop(numIndividuals, [emSequenceOperationType().DIGITAL])]
-    popNames = ["Mixed", "Constant only", "Digital"]
+    popNames = ["Mixed", "Static voltages", "Square waves"]
+    popNum = 0
 
     avgFitness = defaultdict(list)
     maxFitness = defaultdict(list)
     numWorking = defaultdict(list)
+    diffs = defaultdict(list)
+
+    totalNumGenerations = generations * len(populations)
+    runGenerations = 0
 
     for popName, population in zip(popNames,populations):
       cli.reset()
 
       for generation in xrange(0,generations):
           print "Running generation ", generation
+          genStartTime = time.time()
           numWorkingInGeneration = 0
+          avgDiffPerGeneration = 0
+          numComps = 0
           for monkey in population:
+              for monkeyPair in itertools.combinations(population, r=2):
+                avgDiffPerGeneration += diff(monkeyPair[0], monkeyPair[1])
+                numComps += 1
+              
+
               graphNumber = 0
   #           for a,b in itertools.product([0,1],[0,1]):
-              for case in [[0],[1]]:
+              for case in [[0,0,0,0],[1,1,1,1]]:
               #for case in [[0,0]]:
                   #print "  Running individual ", id(monkey), " for input case ", [a,b]
                   monkeyRun = runMonkey(cli, monkey, case)
@@ -521,24 +649,24 @@ def gaLoop(cli, generations):
                   color(coloredGraph[0], monkeyRun.recordings)
                   monkey.graphs.append(copy.deepcopy(coloredGraph[0]))
                   graphNumber += 1
-
-              monkey.fitness = fitness(monkey)
-
-              if isWorkingDevice(monkey, 0.15):
-                numWorkingInGeneration += 1
+              
+              fitWork = fitness(monkey)
+              monkey.fitness = fitWork[0]
+              numWorkingInGeneration += fitWork[1]
 
 
           #Statistics per generation
-          fitMonkeys = sorted(population, key=lambda m: m.fitness, reverse=False)
+          fitMonkeys = sorted(population, key=lambda m: m.fitness, reverse=True)
           print "Most fit monkey of generation ", generation, " : ", fitMonkeys[0].fitness
           printMonkey(fitMonkeys[0])
           avg = sum([a.fitness for a in fitMonkeys])/len(fitMonkeys)
           print "Arithmetic average fitness", avg, " for ", popName
-          print "Working devices in generation", numWorkingInGeneration
+          print "Working devices:", numWorkingInGeneration
 
           maxFitness[popName].append(fitMonkeys[0].fitness)
           avgFitness[popName].append(avg)
           numWorking[popName].append(numWorkingInGeneration)
+          diffs[popName].append(avgDiffPerGeneration/numComps)
 
           for g in fitMonkeys[0].graphs:
             print "-----------------" 
@@ -553,32 +681,59 @@ def gaLoop(cli, generations):
           
           population = selectAndBreed(population, numIndividuals)
           print "Bred new population of ", len(population), " monkeys."
+          genEndTime = time.time()
 
-      #Make plot for this input type
+          runGenerations += 1
+          genTime = (genEndTime - genStartTime)
+          totTimeLeft = (totalNumGenerations - runGenerations) * genTime
+          print "There are ", (totTimeLeft)/60, "minutes of runtime left."
+      popNum += 1
+
+
+    
+    pickles = [maxFitness, avgFitness, numWorking, diffs]
+    out = open('plotdata.pkl', 'wb')
+    pickle.dump(pickles, out)
+    out.close()
 
     plt.figure()
     plt.title("Max fitness")
-    plt.ylim(0,4)
+    #plt.ylim(-5,5)
     for g in popNames:
       plt.plot(maxFitness[g], label=g)
-    plt.legend()
+    plt.legend(loc=4)
     plt.savefig("plot.pdf")
     plt.close()
 
 
     plt.figure()
     plt.title("Arithmetic average fitness")
-    plt.ylim(0,4)
+    #plt.ylim(-5,5)
     for g in popNames:
       plt.plot(avgFitness[g], label=g)
-    plt.legend()
+    plt.legend(loc=4)
     plt.savefig("avg.pdf")
     plt.close()
 
     plt.figure()
-    plt.title("Working devices per")
+    plt.title("Working devices")
     for g in popNames:
       plt.plot(numWorking[g], label=g)
-    plt.legend()
+    plt.ylim(ymin=0)
+    plt.legend(loc=4)
     plt.savefig("working.pdf")
+    plt.close()
+
+    plt.figure()
+    plt.title("Cosine distance")
+    #normalize the differences to 0 and 1
+    plt.ylim(0, 1.0)
+    for g in popNames:
+      #maxDiff = max(diffs[g])
+      #normDiff = []
+      #for d in diffs[g]:
+        #normDiff.append((d/maxDiff))
+      plt.plot(diffs[g])
+
+    plt.savefig("diffs.pdf")
     plt.close()

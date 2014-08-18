@@ -8,11 +8,11 @@ from thrift.transport import TTransport
 from thrift.protocol import TBinaryProtocol
 
 
-transport = TSocket.TSocket('129.241.102.247', 9090)
+transport = TSocket.TSocket('localhost', 9090)
 transport = TTransport.TBufferedTransport(transport)
 prot = TBinaryProtocol.TBinaryProtocol(transport)
 cli = emEvolvableMotherboard.Client(prot)
 transport.open()
 cli.ping()
-ga.gaLoop(cli, 300)
+ga.gaLoop(cli, 5000)
 transport.close()
